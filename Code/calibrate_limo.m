@@ -1,9 +1,13 @@
 clear; clc; close all;
 
 %% ======================= LIMO CALIBRATION SCRIPT =======================
-% Calibrates coordinate transform from MoCap to maze frame
-% Robot should be at maze origin (0,0) pointing in +X direction
-% After calibration, robot returns to origin automatically
+% Calibrates coordinate transform from MoCap (OptiTrack) frame to maze frame.
+%
+% The MoCap system uses its own coordinate system. This script determines
+% the rigid body transformation (rotation + translation) to convert MoCap
+% coordinates to the maze coordinate frame where (0,0) is the start position.
+%
+% Robot should be at maze origin (0,0) pointing in +X direction.
 %
 % REQUIREMENTS:
 % - Robot positioned at maze origin facing +X (toward first waypoint)
@@ -340,13 +344,12 @@ function cfg = limo_config()
 end
 
 function pose = get_mocap_pose(mq, topic)
-    % Get latest MoCap pose with correct yaw extraction
-    
+    % Read pose from MoCap and extract yaw from quaternion
     pause(0.05);
     tbl = [];
     max_attempts = 50;
     attempts = 0;
-    
+
     while isempty(tbl) && attempts < max_attempts
         tbl = read(mq, Topic=topic);
         if isempty(tbl)
@@ -354,42 +357,39 @@ function pose = get_mocap_pose(mq, topic)
             attempts = attempts + 1;
         end
     end
-    
+
     if isempty(tbl)
         error('No MoCap data available on topic: %s after %d attempts', topic, max_attempts);
     end
-    
+
     data = jsondecode(tbl.Data{end});
     pose.pos = data.pos;
-    
-    % Extract YAW from quaternion for OptiTrack Y-up system
+
+    % Convert quaternion to Euler yaw angle
+    % OptiTrack uses Y-up coordinate system, so yaw is rotation about Y
     qx = data.rot(1);
     qy = data.rot(2);
     qz = data.rot(3);
     qw = data.rot(4);
-    
+
     pose.yaw = atan2(2*(qw*qy - qz*qx), 1 - 2*(qx^2 + qy^2));
 end
 
 function sendRobotCmd(sock, v, omega, wheelbase)
-    % Send velocity command directly to robot via TCP
-    
-    % Convert angular velocity to steering angle
+    % Convert (v, omega) to Ackermann steering and send via TCP
+    % Ackermann steering geometry: tan(delta) = L * omega / v
     if abs(v) > 0.05
         steering_angle = atan(wheelbase * omega / v);
     else
         steering_angle = omega * 0.3;
     end
-    
-    % Clamp steering angle
+
     max_steering = deg2rad(30);
     steering_angle = max(min(steering_angle, max_steering), -max_steering);
-    
-    % Send command
+
     cmd = sprintf("%.4f,%.4f\n", v, steering_angle);
     write(sock, cmd);
-    
-    % Read response if available
+
     if sock.NumBytesAvailable > 0
         response = read(sock, sock.NumBytesAvailable, "string");
     end
@@ -405,19 +405,19 @@ function stopRobot(sock, wheelbase)
 end
 
 function [toMazeX, toMazeY] = get_transform_functions(calib)
-    % Get coordinate transform functions based on calibration
-    
+    % Return functions that transform MoCap coordinates to maze frame
+    % Different transforms handle axis swaps and sign inversions
     switch calib.transform
-        case 1
+        case 1  % x_maze = +Z_mocap, y_maze = +X_mocap
             toMazeX = @(xg, zg) zg - calib.origin_z;
             toMazeY = @(xg, zg) xg - calib.origin_x;
-        case 2
+        case 2  % x_maze = -Z_mocap, y_maze = +X_mocap
             toMazeX = @(xg, zg) -(zg - calib.origin_z);
             toMazeY = @(xg, zg) xg - calib.origin_x;
-        case 3
+        case 3  % x_maze = +X_mocap, y_maze = +Z_mocap
             toMazeX = @(xg, zg) xg - calib.origin_x;
             toMazeY = @(xg, zg) zg - calib.origin_z;
-        case 4
+        case 4  % x_maze = +X_mocap, y_maze = -Z_mocap
             toMazeX = @(xg, zg) xg - calib.origin_x;
             toMazeY = @(xg, zg) -(zg - calib.origin_z);
         otherwise

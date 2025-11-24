@@ -2,6 +2,9 @@
 
 The main script is the autonomous_navigation.m.
 
+We did Kalman filter sidequest, spent lots of time on other sidequests and had working code that we did not get the chance to integrate with our working code.
+A simple upgrade is to add some logic to backup and recompute path. We did not do this upgrade because we ran out of time.
+
 Steps:
 First, install matlab and regret it.
 Then, power on the limo, ssh into it, run the limo remote control on it.

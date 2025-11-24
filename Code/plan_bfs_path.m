@@ -1,6 +1,12 @@
 function waypoints = plan_bfs_path(start_pos, goal_pos, obstacles, obsR, cfg)
     %% PLAN_BFS_PATH - Generate waypoints using Breadth-First Search
-    
+    %
+    % BFS explores all neighbors at current depth before moving deeper.
+    % Uses a FIFO queue, guaranteeing the shortest path in unweighted graphs.
+    % Time complexity: O(V + E) where V = vertices, E = edges
+    % BFS is complete (finds a solution if one exists) and optimal for
+    % uniform-cost graphs.
+
     res = cfg.grid_resolution;
     inflation = cfg.planning_inflation;
     bounds = cfg.arena_bounds;
@@ -14,9 +20,10 @@ function waypoints = plan_bfs_path(start_pos, goal_pos, obstacles, obsR, cfg)
     map = binaryOccupancyMap(width, height, 1/res);
     map.GridLocationInWorld = [xmin, ymin];
     
+    % Inflate obstacles by robot radius for configuration space
     inflate_radius = obsR + inflation;
-    
-    % Build occupancy grid
+
+    % Build occupancy grid (discretize continuous space)
     [X, Y] = meshgrid(xmin:res:xmax, ymin:res:ymax);
     occ = zeros(size(X));
     for i = 1:size(obstacles, 1)
@@ -77,21 +84,21 @@ function waypoints = plan_bfs_path(start_pos, goal_pos, obstacles, obsR, cfg)
 end
 
 function path = simple_bfs(map, start, goal)
-    % Simple 4-connected BFS
-    
+    % BFS using FIFO queue - guarantees shortest path in unweighted grid
+
     visited = false(map.GridSize);
     parent = cell(map.GridSize);
-    
-    queue = {start};
+
+    queue = {start};  % FIFO queue
     visited(start(1), start(2)) = true;
-    
-    % 4-connected neighbors (no diagonal)
+
+    % 4-connected neighbors (Manhattan connectivity)
     dirs = [-1 0; 1 0; 0 -1; 0 1];
-    
+
     found = false;
-    
+
     while ~isempty(queue)
-        current = queue{1};
+        current = queue{1};  % Dequeue from front (FIFO)
         queue(1) = [];
         
         % Check if reached goal
@@ -130,10 +137,10 @@ function path = simple_bfs(map, start, goal)
         return;
     end
     
-    % Reconstruct path
+    % Reconstruct path by backtracking through parent pointers
     path = goal;
     current = goal;
-    
+
     while ~(current(1) == start(1) && current(2) == start(2))
         current = parent{current(1), current(2)};
         if isempty(current)
@@ -145,7 +152,7 @@ function path = simple_bfs(map, start, goal)
 end
 
 function simplified = moderate_simplify(path, R_min)
-    % Moderate simplification
+    % Reduce waypoint count while preserving path shape
     
     if size(path,1) <= 2
         simplified = path;

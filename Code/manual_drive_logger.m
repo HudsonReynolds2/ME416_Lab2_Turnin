@@ -165,11 +165,12 @@ try
         %% --- COMPUTE TRACKING ERRORS ---
         dx = x_pos - x_ref;
         dy = y_pos - y_ref;
-        
+
+        % Cross-track error: perpendicular distance to path (in path frame)
         e_y = -dx * sin(theta_ref) + dy * cos(theta_ref);
         e_theta = wrapToPi(theta_pos - theta_ref);
-        
-        % What auto control would compute
+
+        % Compare to what autonomous controller would command
         omega_auto = -(cfg.K_ey * e_y + cfg.K_etheta * e_theta);
         
         %% --- LOG DATA ---
@@ -331,11 +332,12 @@ function [toMazeX, toMazeY] = get_transform_functions(calib)
 end
 
 function pose = get_mocap_pose(mq, topic)
+    % Read pose from motion capture via MQTT
     pause(0.05);
     tbl = [];
     max_attempts = 50;
     attempts = 0;
-    
+
     while isempty(tbl) && attempts < max_attempts
         tbl = read(mq, Topic=topic);
         if isempty(tbl)
@@ -343,19 +345,20 @@ function pose = get_mocap_pose(mq, topic)
             attempts = attempts + 1;
         end
     end
-    
+
     if isempty(tbl)
         error('No MoCap data available on topic: %s', topic);
     end
-    
+
     data = jsondecode(tbl.Data{end});
     pose.pos = data.pos;
-    
+
+    % Convert quaternion to yaw (rotation about Y for OptiTrack Y-up)
     qx = data.rot(1);
     qy = data.rot(2);
     qz = data.rot(3);
     qw = data.rot(4);
-    
+
     pose.yaw = atan2(2*(qw*qy - qz*qx), 1 - 2*(qx^2 + qy^2));
 end
 
@@ -367,18 +370,20 @@ function [x_maze, y_maze, theta_maze] = transform_pose(pose, calib)
 end
 
 function sendRobotCmd(sock, v, omega, wheelbase)
+    % Convert (v, omega) to Ackermann steering angle
+    % For Ackermann geometry: tan(delta) = L * omega / v
     if abs(v) > 0.05
         steering_angle = atan(wheelbase * omega / v);
     else
         steering_angle = omega * 0.3;
     end
-    
+
     max_steering = deg2rad(30);
     steering_angle = max(min(steering_angle, max_steering), -max_steering);
-    
+
     cmd = sprintf("%.4f,%.4f\n", v, steering_angle);
     write(sock, cmd);
-    
+
     if sock.NumBytesAvailable > 0
         response = read(sock, sock.NumBytesAvailable, "string");
     end

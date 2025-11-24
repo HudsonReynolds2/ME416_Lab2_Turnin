@@ -1,9 +1,11 @@
 clear; clc; close all;
-% Running this (sitting below the maze axis) clearly shows T4 yaw+ is
-% correct.
 %% TEST TRANSFORM DIRECTIONS
-% Shows 8 possible transform combinations
-% Drive robot in a circle and see which visualization matches reality
+% Tests all 8 possible coordinate transforms (4 axis mappings x 2 yaw signs)
+% to determine which correctly maps MoCap frame to maze frame.
+%
+% Drive the robot and observe which subplot shows motion matching reality.
+% The correct transform will show the robot moving in the same direction
+% as it moves in the physical world.
 
 fprintf('=================================================================\n');
 fprintf('TRANSFORM DIRECTION TEST\n');
@@ -180,54 +182,57 @@ end
 
 %% Helper functions
 function [x_maze, y_maze, theta_maze] = apply_transform(pose, calib, trans, yaw_sign)
-    % Apply specified transform
+    % Apply one of 4 axis mappings with specified yaw sign
     switch trans
-        case 1
+        case 1  % x_maze = +Z, y_maze = +X
             x_maze = pose.pos(3) - calib.origin_z;
             y_maze = pose.pos(1) - calib.origin_x;
-        case 2
+        case 2  % x_maze = -Z, y_maze = +X
             x_maze = -(pose.pos(3) - calib.origin_z);
             y_maze = pose.pos(1) - calib.origin_x;
-        case 3
+        case 3  % x_maze = +X, y_maze = +Z
             x_maze = pose.pos(1) - calib.origin_x;
             y_maze = pose.pos(3) - calib.origin_z;
-        case 4
+        case 4  % x_maze = +X, y_maze = -Z
             x_maze = pose.pos(1) - calib.origin_x;
             y_maze = -(pose.pos(3) - calib.origin_z);
     end
-    
+
     theta_maze = yaw_sign * (pose.yaw - calib.origin_yaw);
     theta_maze = wrapToPi(theta_maze);
 end
 
 function pose = get_mocap_pose(mq, topic)
+    % Read pose from MoCap via MQTT
     pause(0.05);
     tbl = read(mq, Topic=topic);
     if isempty(tbl)
         error('No MoCap data');
     end
-    
+
     data = jsondecode(tbl.Data{end});
     pose.pos = data.pos;
-    
+
+    % Quaternion to yaw for OptiTrack Y-up system
     qx = data.rot(1);
     qy = data.rot(2);
     qz = data.rot(3);
     qw = data.rot(4);
-    
+
     pose.yaw = atan2(2*(qw*qy - qz*qx), 1 - 2*(qx^2 + qy^2));
 end
 
 function sendRobotCmd(sock, v, omega, wheelbase)
+    % Convert (v, omega) to Ackermann steering: tan(delta) = L*omega/v
     if abs(v) > 0.05
         steering_angle = atan(wheelbase * omega / v);
     else
         steering_angle = omega * 0.3;
     end
-    
+
     max_steering = deg2rad(30);
     steering_angle = max(min(steering_angle, max_steering), -max_steering);
-    
+
     cmd = sprintf("%.4f,%.4f\n", v, steering_angle);
     write(sock, cmd);
 end

@@ -1,7 +1,14 @@
 clear; clc; close all;
 
 %% ======================= AUTONOMOUS MAZE NAVIGATION =======================
-% EKF + Lateral Error Control for autonomous navigation
+% This script implements autonomous robot navigation through a maze using:
+%   1. Extended Kalman Filter (EKF) for state estimation
+%   2. Dubins path planning for smooth, kinematically-feasible trajectories
+%   3. Lateral error feedback control for path following
+%
+% The EKF fuses motion commands (prediction) with motion capture measurements
+% (correction) to estimate the robot's state: [x, y, theta, v, omega]
+%
 % Uses HARD-CODED waypoints (from limo_config) with Dubins smoothing
 % Transform 4 with positive yaw (verified correct)
 
@@ -81,14 +88,27 @@ configureCallback(sock, "off");
 fprintf('✓ TCP connected to robot\n');
 
 %% ======================= INITIALIZE EKF =======================
+% Extended Kalman Filter (EKF) Setup
+% The EKF maintains a 5-dimensional state vector:
+%   x_ekf = [x, y, theta, v, omega]'
+% where:
+%   x, y    - Position in maze frame [m]
+%   theta   - Heading angle [rad]
+%   v       - Linear velocity [m/s]
+%   omega   - Angular velocity [rad/s]
+%
+% The covariance matrix P tracks uncertainty in each state variable.
+% Initial covariance P0 reflects our initial uncertainty about the state.
+
 fprintf('\n=== INITIALIZING EKF ===\n');
 
-% Get initial pose
+% Get initial pose from motion capture system
 pose = get_mocap_pose(mq, cfg.topic_pose);
 [x_init, y_init, theta_init] = transform_pose(pose, calib);
 
-% Initialize state: [x, y, theta, v, omega]'
+% Initialize state vector with measured pose and zero velocities
 x_ekf = [x_init; y_init; theta_init; 0; 0];
+% Initialize covariance matrix (uncertainty in initial state estimate)
 P_ekf = cfg.P0;
 
 fprintf('✓ Initial pose: (%.2f, %.2f) @ %.0f°\n', ...
@@ -174,14 +194,23 @@ try
         t = toc(t_start);
         
         %% --- EKF PREDICTION ---
+        % Predict step: Propagate state forward using motion model
+        % Uses unicycle kinematics with first-order velocity dynamics
+        % x_k+1 = f(x_k, u_k) + process noise
+        % Covariance grows due to process noise Q
         [x_ekf, P_ekf] = ekf_predict(x_ekf, P_ekf, v_cmd, omega_cmd, ...
                                       cfg.dt_control, cfg.Q, cfg.TAU_V, cfg.TAU_OMEGA);
-        
+
         %% --- GET MEASUREMENT ---
+        % Read position and orientation from motion capture system
         pose = get_mocap_pose(mq, cfg.topic_pose);
         [x_meas, y_meas, theta_meas] = transform_pose(pose, calib);
-        
+
         %% --- EKF UPDATE ---
+        % Correct step: Fuse prediction with measurement using Kalman gain
+        % K = P * H' * inv(H * P * H' + R)
+        % The gain K balances trust between prediction and measurement
+        % based on their respective uncertainties (P and R)
         z = [x_meas; y_meas; theta_meas];
         [x_ekf, P_ekf] = ekf_update(x_ekf, P_ekf, z, cfg.R);
         
@@ -350,11 +379,12 @@ function [toMazeX, toMazeY] = get_transform_functions(calib)
 end
 
 function pose = get_mocap_pose(mq, topic)
+    % Read pose from motion capture via MQTT
     pause(0.05);
     tbl = [];
     max_attempts = 50;
     attempts = 0;
-    
+
     while isempty(tbl) && attempts < max_attempts
         tbl = read(mq, Topic=topic);
         if isempty(tbl)
@@ -362,42 +392,46 @@ function pose = get_mocap_pose(mq, topic)
             attempts = attempts + 1;
         end
     end
-    
+
     if isempty(tbl)
         error('No MoCap data available');
     end
-    
+
     data = jsondecode(tbl.Data{end});
     pose.pos = data.pos;
-    
+
+    % Convert quaternion to yaw (rotation about Y-axis for OptiTrack Y-up)
     qx = data.rot(1);
     qy = data.rot(2);
     qz = data.rot(3);
     qw = data.rot(4);
-    
+
     pose.yaw = atan2(2*(qw*qy - qz*qx), 1 - 2*(qx^2 + qy^2));
 end
 
 function [x_maze, y_maze, theta_maze] = transform_pose(pose, calib)
+    % Transform MoCap pose to maze coordinate frame
     [toMazeX, toMazeY] = get_transform_functions(calib);
     x_maze = toMazeX(pose.pos(1), pose.pos(3));
     y_maze = toMazeY(pose.pos(1), pose.pos(3));
-    theta_maze = wrapToPi(pose.yaw - calib.origin_yaw);  % Positive yaw
+    theta_maze = wrapToPi(pose.yaw - calib.origin_yaw);
 end
 
 function sendRobotCmd(sock, v, omega, wheelbase)
+    % Convert (v, omega) to Ackermann steering angle
+    % For Ackermann steering: tan(delta) = L * omega / v
     if abs(v) > 0.05
         steering_angle = atan(wheelbase * omega / v);
     else
         steering_angle = omega * 0.3;
     end
-    
+
     max_steering = deg2rad(30);
     steering_angle = max(min(steering_angle, max_steering), -max_steering);
-    
+
     cmd = sprintf("%.4f,%.4f\n", v, steering_angle);
     write(sock, cmd);
-    
+
     if sock.NumBytesAvailable > 0
         response = read(sock, sock.NumBytesAvailable, "string");
     end
@@ -411,99 +445,134 @@ function stopRobot(sock, wheelbase)
 end
 
 function [x_pred, P_pred] = ekf_predict(x, P, v_cmd, omega_cmd, dt, Q, tau_v, tau_omega)
+    % EKF PREDICTION STEP
+    % Propagates the state estimate forward in time using the motion model.
+    %
+    % Motion Model (Unicycle with first-order velocity dynamics):
+    %   x_dot     = v * cos(theta)        % x velocity in world frame
+    %   y_dot     = v * sin(theta)        % y velocity in world frame
+    %   theta_dot = omega                 % angular velocity
+    %   v_dot     = (v_cmd - v) / tau_v   % velocity approaches command
+    %   omega_dot = (omega_cmd - omega) / tau_omega
+    %
+    % The velocity dynamics model accounts for actuator lag using time constants
+    % tau_v and tau_omega, making the robot behave as a first-order system.
+    %
+    % For the EKF, we linearize this nonlinear model by computing the Jacobian
+    % F = df/dx evaluated at the current state estimate.
+
     x = x(:);
-    
-    % Extract states
-    theta = x(3);
-    v = x(4);
-    omega = x(5);
-    
-    % Continuous-time dynamics
-    f = [v * cos(theta);
-         v * sin(theta);
-         omega;
-         (v_cmd - v) / tau_v;
-         (omega_cmd - omega) / tau_omega];
-    
-    % Discrete-time prediction
+
+    % Extract current state estimates
+    theta = x(3);  % Current heading
+    v = x(4);      % Current velocity
+    omega = x(5);  % Current angular velocity
+
+    % Continuous-time nonlinear dynamics: x_dot = f(x, u)
+    f = [v * cos(theta);                  % dx/dt
+         v * sin(theta);                  % dy/dt
+         omega;                           % dtheta/dt
+         (v_cmd - v) / tau_v;             % dv/dt (first-order lag)
+         (omega_cmd - omega) / tau_omega]; % domega/dt (first-order lag)
+
+    % Euler integration for discrete-time prediction: x_k+1 = x_k + f*dt
     x_pred = x + f * dt;
-    x_pred(3) = wrapToPi(x_pred(3));
-    
-    % Jacobian
+    x_pred(3) = wrapToPi(x_pred(3));  % Normalize angle to [-pi, pi]
+
+    % Jacobian of f with respect to state x (linearization for EKF)
+    % F_ij = df_i / dx_j
     F = [0, 0, -v*sin(theta), cos(theta), 0;
          0, 0,  v*cos(theta), sin(theta), 0;
          0, 0,  0,            0,          1;
          0, 0,  0,           -1/tau_v,    0;
          0, 0,  0,            0,         -1/tau_omega];
-    
-    % Discrete-time state transition
+
+    % Discrete-time state transition matrix: A = I + F*dt
     A = eye(5) + F * dt;
-    
-    % Predict covariance
+
+    % Propagate covariance: P_k+1 = A * P_k * A' + Q
+    % Covariance grows due to process noise Q
     P_pred = A * P * A' + Q * dt;
 end
 
 function [x_upd, P_upd] = ekf_update(x, P, z, R)
+    % EKF UPDATE (CORRECTION) STEP
+    % Fuses the predicted state with sensor measurements using Kalman gain.
+    %
+    % Measurement Model:
+    %   z = H * x + measurement_noise
+    %   where z = [x_meas; y_meas; theta_meas] from motion capture
+    %
+    % The Kalman gain K optimally weights the innovation (measurement residual)
+    % to minimize the posterior covariance. When measurement noise R is small
+    % relative to prediction uncertainty P, we trust measurements more.
+    %
+    % Joseph form for covariance update is numerically more stable than
+    % the standard form P = (I - K*H)*P
+
     x = x(:);
     z = z(:);
-    
-    % Measurement model: z = [x; y; theta]
+
+    % Measurement model: z = H * x (linear, so H is constant)
+    % We only measure position and heading, not velocities
     H = [1, 0, 0, 0, 0;
          0, 1, 0, 0, 0;
          0, 0, 1, 0, 0];
-    
-    % Innovation
+
+    % Innovation (measurement residual): y = z - h(x_predicted)
     y = z - H * x;
-    y(3) = wrapToPi(y(3));
-    
-    % Innovation covariance
+    y(3) = wrapToPi(y(3));  % Handle angle wrapping for heading
+
+    % Innovation covariance: S = H * P * H' + R
     S = H * P * H' + R;
-    
-    % Kalman gain
+
+    % Kalman gain: K = P * H' * S^(-1)
+    % K determines how much to trust the measurement vs prediction
     K = P * H' / S;
-    
-    % Update state
+
+    % Update state estimate: x = x + K * y
     x_upd = x + K * y;
     x_upd(3) = wrapToPi(x_upd(3));
-    
-    % Update covariance (Joseph form)
+
+    % Update covariance using Joseph form for numerical stability:
+    % P = (I - K*H) * P * (I - K*H)' + K * R * K'
+    % This form guarantees P remains symmetric positive definite
     I_KH = eye(5) - K * H;
     P_upd = I_KH * P * I_KH' + K * R * K';
 end
 
 function [v_cmd, omega_cmd, e_y, e_theta, idx_ref] = compute_control(x_pos, y_pos, theta_pos, ref, K_ey, K_etheta, lookahead, v_nom)
-    % Find closest point
+    % Lateral error feedback controller for path following
+
+    % Find closest point on path
     dists = sqrt((ref.x - x_pos).^2 + (ref.y - y_pos).^2);
     [~, idx_closest] = min(dists);
-    
-    % Look ahead
+
+    % Lookahead improves stability by targeting a point ahead on the path
     s_current = ref.s(idx_closest);
     s_target = min(s_current + lookahead, ref.s(end));
     idx_ref = find(ref.s >= s_target, 1);
     if isempty(idx_ref)
         idx_ref = length(ref.s);
     end
-    
-    % Reference point
+
     x_ref = ref.x(idx_ref);
     y_ref = ref.y(idx_ref);
     theta_ref = ref.theta(idx_ref);
-    
-    % Compute errors
+
     dx = x_pos - x_ref;
     dy = y_pos - y_ref;
-    
-    % Lateral error (cross-track)
+
+    % Cross-track error: perpendicular distance to path (in path frame)
     e_y = -dx * sin(theta_ref) + dy * cos(theta_ref);
-    
+
     % Heading error
     e_theta = wrapToPi(theta_pos - theta_ref);
-    
-    % Control law
+
+    % Proportional control: omega = -(K_ey * e_y + K_etheta * e_theta)
     v_cmd = v_nom;
     omega_cmd = -(K_ey * e_y + K_etheta * e_theta);
-    
-    % Clamp
+
     omega_max = 1.0;
     omega_cmd = max(min(omega_cmd, omega_max), -omega_max);
 end

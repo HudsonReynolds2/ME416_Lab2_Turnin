@@ -1,7 +1,8 @@
 clear; clc; close all;
 
-%% ======================= MULTI-MAZE VISUALIZER (HARDCODED WAYPOINTS) =======================
-% Visualize all maze courses with hardcoded waypoints from dubins_solver.m
+%% ======================= MULTI-MAZE VISUALIZER =======================
+% Visualizes all maze courses with Dubins paths through predefined waypoints.
+% Shows obstacles, paths, and waypoints for each maze configuration.
 
 fprintf('=================================================================\n');
 fprintf('MULTI-MAZE PATH VISUALIZER (Using Hardcoded Waypoints)\n');

@@ -19,18 +19,20 @@ function cfg = limo_config()
     cfg.dt_control = 0.05;               % [s] Control loop period (20 Hz)
     
     %% ======================= PATH PLANNING PARAMETERS =======================
-    cfg.R_min = 0.30;                    % [m] Minimum turning radius for Dubins
-    cfg.step = 0.05;                     % [m] Dubins path interpolation step
-    
-    % Grid-based planning parameters - BALANCED FOR ALL ALGORITHMS
-    cfg.grid_resolution = 0.20;          % [m] Coarser grid to ensure paths can be found
-    cfg.planning_inflation = 0.20;       % [m] Moderate inflation - enough for safety but not blocking paths
+    % Dubins path parameters (kinematically feasible paths)
+    cfg.R_min = 0.30;                    % [m] Minimum turning radius for Dubins curves
+    cfg.step = 0.05;                     % [m] Path discretization step
+
+    % Grid-based planning (BFS/DFS/A*) parameters
+    cfg.grid_resolution = 0.20;          % [m] Grid cell size
+    cfg.planning_inflation = 0.20;       % [m] Obstacle inflation for safety margin
     
     %% ======================= CONTROL GAINS =======================
-    cfg.K_ey = 8.0;                      % Cross-track error gain
-    cfg.K_etheta = 3.0;                  % Heading error gain
-    cfg.K_ev = 0.5;                      % Velocity error gain (unused in current formulation)
-    cfg.LOOKAHEAD = 0.40;                % [m] Lookahead distance for reference point
+    % Proportional gains for lateral error control: omega = -(K_ey*e_y + K_etheta*e_theta)
+    cfg.K_ey = 8.0;                      % Cross-track error gain [rad/s per m]
+    cfg.K_etheta = 3.0;                  % Heading error gain [rad/s per rad]
+    cfg.K_ev = 0.5;                      % Velocity error gain (unused)
+    cfg.LOOKAHEAD = 0.40;                % [m] Lookahead distance (larger = smoother but less responsive)
     
     %% ======================= OBSTACLE PARAMETERS =======================
     cfg.obsR = 0.30;                     % [m] Actual obstacle radius (physical size)
@@ -153,22 +155,25 @@ function cfg = limo_config()
     cfg.courseName = cfg.mazes(cfg.maze_select).name;
     
     %% ======================= EKF PARAMETERS =======================
+    % First-order velocity dynamics: dv/dt = (v_cmd - v)/tau
     cfg.TAU_V = 0.15;                    % [s] Velocity time constant
     cfg.TAU_OMEGA = 0.15;                % [s] Angular velocity time constant
-    
-    % Process noise covariance
-    cfg.Q_pos = 0.01^2;                  % Position noise
-    cfg.Q_theta = (2*pi/180)^2;          % Heading noise (2 deg)
-    cfg.Q_v = 0.05^2;                    % Velocity noise
-    cfg.Q_omega = (5*pi/180)^2;          % Angular velocity noise (5 deg/s)
+
+    % Process noise Q: Uncertainty added during prediction step
+    % Larger Q = less trust in motion model, more responsive to measurements
+    cfg.Q_pos = 0.01^2;                  % Position noise variance [m^2]
+    cfg.Q_theta = (2*pi/180)^2;          % Heading noise variance [rad^2]
+    cfg.Q_v = 0.05^2;                    % Velocity noise variance [(m/s)^2]
+    cfg.Q_omega = (5*pi/180)^2;          % Angular velocity noise [(rad/s)^2]
     cfg.Q = diag([cfg.Q_pos, cfg.Q_pos, cfg.Q_theta, cfg.Q_v, cfg.Q_omega]);
-    
-    % Measurement noise covariance
-    cfg.R_pos = 0.002^2;                 % OptiTrack position accuracy
-    cfg.R_theta = (1*pi/180)^2;          % OptiTrack angle accuracy (1 deg)
+
+    % Measurement noise R: Uncertainty in sensor readings
+    % Smaller R = more trust in measurements (OptiTrack is very accurate)
+    cfg.R_pos = 0.002^2;                 % Position measurement noise [m^2]
+    cfg.R_theta = (1*pi/180)^2;          % Heading measurement noise [rad^2]
     cfg.R = diag([cfg.R_pos, cfg.R_pos, cfg.R_theta]);
-    
-    % Initial covariance
+
+    % Initial state covariance P0: Uncertainty in initial state estimate
     cfg.P0 = diag([0.01^2, 0.01^2, (2*pi/180)^2, 0.1^2, (10*pi/180)^2]);
     
     %% ======================= CONNECTION PARAMETERS =======================

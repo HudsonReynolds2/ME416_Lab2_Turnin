@@ -1,6 +1,11 @@
 function waypoints = plan_dfs_path(start_pos, goal_pos, obstacles, obsR, cfg)
     %% PLAN_DFS_PATH - Generate waypoints using Depth-First Search
-    
+    %
+    % DFS explores as far as possible along each branch before backtracking.
+    % Uses a LIFO stack. DFS is complete in finite spaces but NOT optimal -
+    % it may find a longer path than BFS. Memory efficient: O(bd) vs O(b^d).
+    % This implementation uses goal-biased neighbor ordering to improve paths.
+
     res = cfg.grid_resolution;
     inflation = cfg.planning_inflation;
     bounds = cfg.arena_bounds;
@@ -77,24 +82,24 @@ function waypoints = plan_dfs_path(start_pos, goal_pos, obstacles, obsR, cfg)
 end
 
 function path = simple_dfs(map, start, goal)
-    % DFS with goal bias - explore toward goal first
-    
+    % DFS using LIFO stack with goal-biased neighbor ordering
+
     visited = false(map.GridSize);
     parent = cell(map.GridSize);
-    
-    stack = {start};
+
+    stack = {start};  % LIFO stack
     visited(start(1), start(2)) = true;
-    
+
     % 4-connected neighbors
     dirs = [-1 0; 1 0; 0 -1; 0 1];
-    
+
     found = false;
     max_iters = prod(map.GridSize) * 2;
     iters = 0;
-    
+
     while ~isempty(stack) && iters < max_iters
         iters = iters + 1;
-        current = stack{end};
+        current = stack{end};  % Pop from top (LIFO)
         stack(end) = [];
         
         % Check if reached goal
@@ -128,14 +133,13 @@ function path = simple_dfs(map, start, goal)
             neighbors = [neighbors; neighbor];
         end
         
-        % Sort by distance to goal - ASCENDING (nearest first in array)
+        % Sort neighbors by distance to goal (greedy heuristic)
+        % Push furthest first so nearest is on top of stack (explored first)
         if ~isempty(neighbors)
             dists = sum((neighbors - repmat(goal, size(neighbors,1), 1)).^2, 2);
-            [~, idx] = sort(dists, 'ascend');  % nearest first
-            
-            % Push in order: furthest to nearest
-            % Since stack is LIFO, nearest (pushed last) will be explored first
-            for i = length(idx):-1:1  % reverse order
+            [~, idx] = sort(dists, 'ascend');
+
+            for i = length(idx):-1:1  % Push in reverse order
                 neighbor = neighbors(idx(i),:);
                 if ~visited(neighbor(1), neighbor(2))
                     visited(neighbor(1), neighbor(2)) = true;
